@@ -101,6 +101,7 @@ struct CompositorApp: App {
                 Group {
                     CommandGroup(after: .appInfo) {
                         Button("Check for Updates…") { applicationDelegate.updater.checkForUpdates() }
+                        Button("MCP Server…") { applicationDelegate.mcpServer.showSettings() }
                     }
                     CommandGroup(after: .toolbar) {
                         Button("Search Commands…") {

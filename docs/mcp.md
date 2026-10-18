@@ -1,132 +1,97 @@
-# Compositor MCP server
+# Using Compositor with Codex and Claude
 
-Compositor includes a native macOS MCP server for editable Pen paths. Codex, Claude Code and other stdio MCP clients
-can create and refine vector work in a saved `.comp` project while it is open. Compositor notices each complete write
-and reloads the canvas.
+Compositor exposes the document open in the app as a local Model Context Protocol server. An agent can create editable
+layers, paint and retouch, make selections, crop, inspect a rendered preview and save the project without simulating
+mouse input.
 
-The server is a separate command-line executable rather than the sandboxed GUI process. This lets an MCP client grant
-it access to the project path explicitly, without giving the editor a background network listener or broadening the
-editor's sandbox.
+## Start the in-app server
 
-## Build
+1. Open **Compositor › MCP Server…**.
+2. Turn on **Enabled**.
+3. Copy the endpoint and access token, or choose **Copy Connection JSON**.
 
-Xcode 26 or its matching command-line tools are required.
-
-```sh
-./scripts/build-mcp.sh
-```
-
-The script prints the absolute executable path. In this checkout it is:
-
-```text
-/Users/zhangwenyu/Documents/GitHub/Compositor/build/CompositorMCP/release/compositor-mcp
-```
+The default endpoint is `http://127.0.0.1:49678/mcp`. Compositor listens only on this Mac and every request must include
+`Authorization: Bearer <access-token>`. Regenerating the token immediately invalidates the old one. Only local Codex or
+Claude sessions can reach the loopback endpoint; a cloud-hosted agent cannot connect to it directly.
 
 ## Connect Codex
 
-```sh
-codex mcp add compositor -- /Users/zhangwenyu/Documents/GitHub/Compositor/build/CompositorMCP/release/compositor-mcp
-codex mcp list
-```
-
-Codex also accepts the equivalent `~/.codex/config.toml` entry:
+Add this to `~/.codex/config.toml`, replacing `PASTE_TOKEN` with the token shown by Compositor:
 
 ```toml
 [mcp_servers.compositor]
-command = "/Users/zhangwenyu/Documents/GitHub/Compositor/build/CompositorMCP/release/compositor-mcp"
-startup_timeout_sec = 10
-tool_timeout_sec = 60
+url = "http://127.0.0.1:49678/mcp"
+http_headers = { Authorization = "Bearer PASTE_TOKEN" }
 ```
 
-Codex CLI, the Codex IDE extension and the ChatGPT desktop app share MCP configuration on the same Codex host. In the
-desktop app or IDE, the same server can instead be added as an **STDIO** server and then restarted.
+Restart Codex after changing the configuration, then verify the connection with `codex mcp list`. Codex can also read
+the token from `bearer_token_env_var` so it does not have to be stored in the configuration file.
 
 ## Connect Claude Code
 
+Run this from the project where Claude Code should use Compositor, replacing `PASTE_TOKEN`:
+
 ```sh
-claude mcp add compositor --scope user -- /Users/zhangwenyu/Documents/GitHub/Compositor/build/CompositorMCP/release/compositor-mcp
-claude mcp get compositor
+claude mcp add --transport http compositor http://127.0.0.1:49678/mcp \
+  --header "Authorization: Bearer PASTE_TOKEN"
 ```
 
-An equivalent Claude Desktop or project `.mcp.json` entry is:
+Alternatively, **Copy Connection JSON** in Compositor produces a complete HTTP server object that can be passed to
+`claude mcp add-json compositor '<json>'`. Check the connection with `claude mcp get compositor` or `/mcp`.
 
-```json
-{
-  "mcpServers": {
-    "compositor": {
-      "type": "stdio",
-      "command": "/Users/zhangwenyu/Documents/GitHub/Compositor/build/CompositorMCP/release/compositor-mcp",
-      "args": []
-    }
-  }
-}
-```
+## Recommended agent workflow
 
-Use an absolute command path. Project-scoped Claude configurations require approval the first time they are loaded.
+1. Call `compositor_get_document` to read the canvas, active layer, selection and viewport.
+2. Use document coordinates; `(0, 0)` is the top-left of the canvas.
+3. Prefer editable Shape, Type and Pen layers when they fit the design. Use paint and retouching tools for raster work.
+4. Call `compositor_render_document` after meaningful changes and inspect the returned PNG.
+5. Use `compositor_history` to undo or redo. Call `compositor_save_document` only when the user asks to save.
 
-## Pen tools
+Tool calls affect the open Compositor tab and appear on the canvas immediately.
 
-All coordinates in the MCP API are document pixels. Colors use RGB values from 0 to 1. A node has an `anchor` and
-optional `in_handle` / `out_handle`; omitted handles equal the anchor and therefore make a corner.
+## Tool coverage
 
-| Tool | Purpose |
-| --- | --- |
-| `compositor_list_pen_paths` | Read all editable Pen paths and their document-space nodes. |
-| `compositor_create_pen_path` | Add a closed `Shape` path or an open `Line` path without painting pixels. |
-| `compositor_update_pen_path` | Rename, recolor, show/hide, change width/mode, or replace nodes to move/add/delete points. |
-| `compositor_delete_pen_path` | Delete a path unless it is used as a live-mask source. |
-| `compositor_inspect_pen_path_geometry` | Return path length plus arc-length position, tangent, normal and angle samples. |
+| Compositor tool or operation | MCP tool | Main actions |
+| --- | --- | --- |
+| Inspect canvas | `compositor_get_document` | Canvas, paginated layers, editable properties, selection and viewport |
+| New document | `compositor_create_document` | Size, resolution and background |
+| Move / Transform | `compositor_update_layer` | Position, size, rotation, flip, opacity and blend mode |
+| Marquee / Lasso | `compositor_set_selection` | Rectangle, ellipse and polygonal paths |
+| Magic Wand / Object Selection | `compositor_set_selection` | Color- and object-based selections |
+| Selection commands | `compositor_set_selection` | Select all, deselect, invert, add, subtract and feather |
+| Crop | `compositor_crop` | Whole-pixel document rectangle |
+| Brush / Eraser / Retouch | `compositor_paint_stroke` | Brush, erase, healing, clone, blur, smudge and liquify paths |
+| Gradient | `compositor_apply_gradient` | Linear or radial layer or mask gradient |
+| Layer and live masks | `compositor_manage_mask` | Add, remove, enable, invert, link, copy and load as a selection |
+| Pen | `compositor_add_vector_path` | Editable anchors, cubic handles, path color and line width |
+| Shape | `compositor_add_shape` | Editable rectangle, ellipse or line |
+| Type | `compositor_add_text` | Editable text, font, color, alignment and text box |
+| Eyedropper | `compositor_sample_color` | Composite color at a document point |
+| Hand / Zoom | `compositor_set_view` | Fit, pan and zoom |
+| Layers | `compositor_manage_layer` | Add, group, duplicate, rename, delete and place |
+| Layer selection | `compositor_select_layer` | Set the active layer |
+| History | `compositor_history` | Undo and redo |
+| Preview | `compositor_render_document` | Render a bounded PNG preview for visual inspection |
+| Save | `compositor_save_document` | Save an existing `.comp` project |
 
-For example, a client can call `compositor_create_pen_path` with:
+Several related interface modes share one API intentionally. For example, Brush, Eraser and retouching modes all take
+a document-space point path through `compositor_paint_stroke`; this gives an agent the same creative operation without
+fragile pointer automation. Pen `shape` paths are closed and Pen `line` paths are open. Creating a Pen path preserves
+its vector geometry without automatically painting or filling it.
 
-```json
-{
-  "project_path": "/Users/me/Desktop/Poster.comp",
-  "name": "Title Arc",
-  "mode": "Line",
-  "color": { "red": 1, "green": 0.75, "blue": 0.2 },
-  "line_width": 6,
-  "nodes": [
-    {
-      "anchor": { "x": 180, "y": 420 },
-      "out_handle": { "x": 300, "y": 300 }
-    },
-    {
-      "anchor": { "x": 620, "y": 420 },
-      "in_handle": { "x": 500, "y": 300 }
-    }
-  ]
-}
-```
+## Safety and limits
 
-The result is an ordinary editable Pen layer with a transparent identity PNG. Fill and brush-stroke remain explicit
-commands in the GUI, so creating or editing a path never changes pixels. The MCP server writes the backing first and then
-atomically replaces `manifest.json`, so Compositor never loads a half-written path. Calls reject malformed projects,
-unsupported future format versions, non-finite coordinates, excessive nodes and unsafe deletion of live-mask sources.
-A path that has a fill, a brush stroke, erasing or separate pieces (added in Compositor) can be renamed or shown/hidden
-through MCP, but changing its shape, mode, color or width is refused, since rewriting it would drop that work.
+- The HTTP listener binds to `127.0.0.1` only, validates `Host` and `Origin`, and requires a random Bearer token.
+- Requests are limited to 4 MiB, headers to 64 KiB, active connections and sessions to 32, and incomplete requests to
+  a 15-second deadline.
+- Only one MCP editing call runs at a time, preventing asynchronous tools from interleaving document mutations.
+- Coordinates, canvas sizes, path-node counts, text summaries and layer pages are bounded before allocation.
+- Preview images are composited directly at the requested size and capped at 16 megapixels instead of first rendering
+  an oversized full-resolution canvas.
 
-## Text-on-path hand-off
+## Optional Pen-only file server
 
-The GUI app now exposes `TextPathPlacement`, `VectorPathGeometry`, `VectorPathSample`,
-`EditorSession.textPathGeometry(for:)` and `EditorSession.textPathPlacement(for:...)`. This is intentionally a geometry
-contract, not a second text engine:
-
-- Text owns content, fonts, shaping, tracking and glyph editing.
-- Pen owns editable Bezier nodes and converts the layer transform into document-space geometry.
-- The geometry API supplies total arc length, nearest offset, position, tangent, normal and baseline-offset sampling.
-- A future text layer can persist `TextPathPlacement.pathLayerID` and recalculate glyph positions whenever that path
-  changes.
-
-`compositor_inspect_pen_path_geometry` exposes the same contract to agents. Visual text-on-path rendering is not turned
-on yet; the interface is ready for the text maintainer to connect without changing Pen internals.
-
-## Operational notes
-
-- Save the document as a `.comp` project before calling the tools.
-- If the open document has unsaved local edits, Compositor keeps its existing conflict prompt instead of overwriting
-  the user's work silently.
-- External MCP edits reset that document's in-memory undo history when the app reloads it, just like another editor
-  changing the project on disk.
-- The server reads and writes only the `project_path` supplied in a tool call. It does not listen on a port or use the
-  network.
+`Tools/CompositorMCP` remains available as a separate stdio server for agents that need to edit Pen paths in a saved
+`.comp` package without launching Compositor. Build it with `./scripts/build-mcp.sh`, then register the printed absolute
+executable path as a stdio MCP server. Its tools list, create, update, delete and inspect saved Pen paths. Unlike the
+in-app server, it edits only the project path supplied in each call and cannot operate the live canvas tools.

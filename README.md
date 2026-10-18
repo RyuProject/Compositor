@@ -80,8 +80,10 @@ brew install --cask robbietilton-compositor
 
 ### Works with AI agents
 
-Editable Pen paths are also available through the native [Compositor MCP server](docs/mcp.md) for Codex, Claude Code
-and other stdio MCP clients.
+The built-in [Compositor MCP server](docs/mcp.md) lets local Codex and Claude clients inspect and edit the open canvas,
+including layers, selections, masks, paint, shapes, text and Pen paths. A Pen-only stdio server is also available for
+editing saved `.comp` projects without launching the app.
+
 - AI agents and scripts can build and edit projects directly: a `.comp` is a folder of PNG layers and a manifest, and an open project updates live as it's written. See [Writing Compositor projects](docs/writing-comp-files.md)
 
 ## Requirements
