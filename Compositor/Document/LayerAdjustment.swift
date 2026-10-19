@@ -205,6 +205,40 @@ nonisolated struct LayerAdjustment: Codable, Equatable, Sendable {
 }
 
 extension EditorSession {
+    /// Adds an already configured adjustment without opening its editor. This is used by scripted edits that need one
+    /// deterministic undo step rather than inheriting whichever controls happen to be open in the interface.
+    @discardableResult
+    func addAdjustment(_ value: LayerAdjustment, name: String? = nil) -> UUID? {
+        guard canEditLayers, value.isValid, let document, document.layers.count < 10_000 else { return nil }
+        var layer = ImageLayer(name: name ?? value.kind.rawValue, blankSize: document.size)
+        layer.adjustment = value
+        layer.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
+        let index = document.layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? document.layers.count
+        beginEdit("New \(value.kind.rawValue) Adjustment")
+        self.document?.layers.insert(layer, at: index)
+        if let parent = layer.parentID { collapsedGroupIDs.remove(parent) }
+        activeLayerID = layer.id
+        endEdit()
+        return layer.id
+    }
+
+    /// Replaces an adjustment's editable settings as one undo step.
+    @discardableResult
+    func setAdjustment(_ id: UUID, value: LayerAdjustment) -> Bool {
+        guard canEditLayers, value.isValid,
+              let index = document?.layers.firstIndex(where: { $0.id == id }),
+              let current = document?.layers[index].adjustment,
+              current.kind == value.kind else { return false }
+        if current == value { return true }
+        finishOpacityEdit()
+        beginEdit("Edit \(value.kind.rawValue) Adjustment")
+        document?.layers[index].adjustment = value
+        activeLayerID = id
+        endEdit()
+        brushRevision += 1
+        return true
+    }
+
     func addAdjustment(_ kind: AdjustmentKind) {
         guard canEditLayers, let document, document.layers.count < 10_000 else { return }
         var layer = ImageLayer(name: kind.rawValue, blankSize: document.size)

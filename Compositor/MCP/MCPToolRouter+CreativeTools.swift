@@ -769,19 +769,19 @@ extension MCPToolRouter {
         return try result(["layer": layerSummary(layer)])
     }
 
-    private func editableSession() throws -> EditorSession {
+    func editableSession() throws -> EditorSession {
         let session = try documentSession()
         guard session.canEditLayers else { throw MCPToolFailure(message: "Finish the current canvas edit or dialog before using this tool.") }
         return session
     }
 
-    private func documentSession() throws -> EditorSession {
+    func documentSession() throws -> EditorSession {
         let session = workspace.current.session
         guard session.document != nil else { throw MCPToolFailure(message: "Create or open a document first.") }
         return session
     }
 
-    private func select(_ id: UUID, in session: EditorSession) throws {
+    func select(_ id: UUID, in session: EditorSession) throws {
         guard session.document?.layers.contains(where: { $0.id == id }) == true else {
             throw MCPToolFailure(message: "No layer has id \(id.uuidString).")
         }
@@ -789,7 +789,7 @@ extension MCPToolRouter {
         guard session.activeLayerID == id else { throw MCPToolFailure(message: "The layer could not be selected.") }
     }
 
-    private func parseColor(_ value: String, key: String) throws -> PaletteColor {
+    func parseColor(_ value: String, key: String) throws -> PaletteColor {
         guard let color = PaletteColor(hex: value) else { throw MCPToolFailure(message: "\(key) must look like #3366FF.") }
         return color
     }
@@ -801,7 +801,7 @@ extension MCPToolRouter {
         return mask
     }
 
-    private func selectionMode(_ arguments: [String: Any]) throws -> SelectionMode {
+    func selectionMode(_ arguments: [String: Any]) throws -> SelectionMode {
         switch try arguments.optionalString("mode")?.lowercased() ?? "replace" {
         case "replace": .replace
         case "add": .add
@@ -810,7 +810,7 @@ extension MCPToolRouter {
         }
     }
 
-    private func selectionSummary(_ selection: DocumentSelection?) -> Any {
+    func selectionSummary(_ selection: DocumentSelection?) -> Any {
         guard let selection else { return NSNull() }
         if selection.isEmpty {
             return ["empty": true, "antialiased": selection.antialiased,

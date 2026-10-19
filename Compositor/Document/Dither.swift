@@ -2,7 +2,7 @@ import AppKit
 import CoreText
 
 /// Filter › Dither's looks, grouped as the panel's menu lists them. The order matches `DitherPixels.h`.
-nonisolated enum DitherStyle: String, CaseIterable, Sendable {
+nonisolated enum DitherStyle: String, CaseIterable, Codable, Sendable {
     case atkinson = "Atkinson (Classic Mac)"
     case floydSteinberg = "Floyd–Steinberg"
     case bayer2 = "Bayer 2 × 2"
@@ -34,18 +34,18 @@ nonisolated enum DitherStyle: String, CaseIterable, Sendable {
 
 /// How a chunky pixel is drawn: a solid square, or a round dot with the dark color showing around it, like the lit
 /// pixels of a dot-matrix or LED screen.
-nonisolated enum DitherPixelShape: String, CaseIterable, Sendable {
+nonisolated enum DitherPixelShape: String, CaseIterable, Codable, Sendable {
     case square = "Square"
     case dot = "Dot"
 }
 
-nonisolated enum DitherColors: String, CaseIterable, Sendable {
+nonisolated enum DitherColors: String, CaseIterable, Codable, Sendable {
     case blackWhite = "Black & White"
     case twoColors = "Two Colors"
     case original = "Original"
 }
 
-nonisolated struct DitherSettings: Equatable, Sendable {
+nonisolated struct DitherSettings: Codable, Equatable, Sendable {
     static let pixelSizeRange: ClosedRange<Double> = 1...32
     static let cellSizeRange: ClosedRange<Double> = 4...64
     static let textSizeRange: ClosedRange<Double> = 6...64

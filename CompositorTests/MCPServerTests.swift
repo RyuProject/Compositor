@@ -59,7 +59,7 @@ struct MCPServerTests {
         let object = try #require(try JSONSerialization.jsonObject(with: listResponse.body) as? [String: Any])
         let result = try #require(object["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
-        #expect(tools.count == 22)
+        #expect(tools.count == 30)
         #expect(tools.contains { $0["name"] as? String == "compositor_add_vector_path" })
         #expect(tools.contains { $0["name"] as? String == "compositor_update_vector_path" })
         #expect(tools.contains { $0["name"] as? String == "compositor_apply_vector_path" })
@@ -68,6 +68,113 @@ struct MCPServerTests {
         #expect(tools.contains { $0["name"] as? String == "compositor_paint_stroke" })
         #expect(tools.contains { $0["name"] as? String == "compositor_add_text" })
         #expect(tools.contains { $0["name"] as? String == "compositor_manage_mask" })
+        for name in ["compositor_apply_filter", "compositor_get_filter_settings", "compositor_manage_adjustment", "compositor_manage_layer_effect",
+                     "compositor_open_document", "compositor_import_files", "compositor_export_document",
+                     "compositor_edit_channel"] {
+            #expect(tools.contains { $0["name"] as? String == name })
+        }
+    }
+
+    @Test func advancedEditingToolsAreUndoableAndPreserveTheirSettings() async throws {
+        let workspace = ProjectWorkspace()
+        let router = MCPToolRouter(workspace: workspace)
+        let created = await router.call(name: "compositor_create_document", arguments: [
+            "width": 48, "height": 32, "background": "#FFFFFF"
+        ])
+        #expect(created["isError"] as? Bool == false)
+        let session = workspace.current.session
+        let backgroundID = try #require(session.activeLayerID)
+        let filterDefaults = await router.call(name: "compositor_get_filter_settings", arguments: ["kind": "gaussian_blur"])
+        #expect(filterDefaults["isError"] as? Bool == false)
+        #expect(((filterDefaults["structuredContent"] as? [String: Any])?["settings"] as? [String: Any])?["radius"] as? Double == 5)
+
+        let effect = await router.call(name: "compositor_manage_layer_effect", arguments: [
+            "action": "set", "layer_id": backgroundID.uuidString, "kind": "color_overlay",
+            "color": "#4477CC", "opacity": 0.4
+        ])
+        #expect(effect["isError"] as? Bool == false)
+        #expect(session.activeLayer?.effects?.colorOverlay?.opacity == 0.4)
+
+        let filled = await router.call(name: "compositor_edit_channel", arguments: [
+            "action": "fill", "channel": "red", "layer_id": backgroundID.uuidString, "value": 0
+        ])
+        #expect(filled["isError"] as? Bool == false)
+        let channelImage = try #require(session.activeLayer?.asset?.image)
+        let channelBitmap = try PixelAdjust.bitmap(width: channelImage.width, height: channelImage.height, mask: false)
+        channelBitmap.draw(channelImage, in: CGRect(x: 0, y: 0, width: channelImage.width, height: channelImage.height))
+        #expect(channelBitmap.data?.assumingMemoryBound(to: UInt8.self)[0] == 0)
+        let selected = await router.call(name: "compositor_edit_channel", arguments: [
+            "action": "load_selection", "channel": "green", "layer_id": backgroundID.uuidString,
+            "threshold": 128
+        ])
+        #expect(selected["isError"] as? Bool == false)
+        #expect(session.selection?.isEmpty == false)
+
+        let filter = await router.call(name: "compositor_apply_filter", arguments: [
+            "kind": "add_noise", "layer_id": backgroundID.uuidString,
+            "settings": ["amount": 12]
+        ])
+        #expect(filter["isError"] as? Bool == false)
+        #expect((filter["structuredContent"] as? [String: Any])?["applied"] as? Bool == true)
+        let invalidSettings = await router.call(name: "compositor_apply_filter", arguments: [
+            "kind": "gaussian_blur", "layer_id": backgroundID.uuidString,
+            "settings": ["radus": 12]
+        ])
+        #expect(invalidSettings["isError"] as? Bool == true)
+
+        let adjustment = await router.call(name: "compositor_manage_adjustment", arguments: [
+            "action": "add", "kind": "gaussian_blur", "name": "Soft focus",
+            "settings": ["blurRadius": 7]
+        ])
+        #expect(adjustment["isError"] as? Bool == false)
+        let adjustmentID = try #require(session.activeLayerID)
+        #expect(session.activeLayer?.adjustment?.gaussianRadius == 7)
+        let changed = await router.call(name: "compositor_manage_adjustment", arguments: [
+            "action": "update", "layer_id": adjustmentID.uuidString,
+            "settings": ["blurRadius": 13]
+        ])
+        #expect(changed["isError"] as? Bool == false)
+        #expect(session.activeLayer?.adjustment?.gaussianRadius == 13)
+        let undone = await router.call(name: "compositor_history", arguments: ["action": "undo"])
+        #expect(undone["isError"] as? Bool == false)
+        #expect(session.activeLayer?.adjustment?.gaussianRadius == 7)
+        let exposure = await router.call(name: "compositor_manage_adjustment", arguments: [
+            "action": "add", "kind": "exposure", "settings": ["exposureSettings": ["exposure": 1.5]]
+        ])
+        #expect(exposure["isError"] as? Bool == false)
+        #expect(session.activeLayer?.adjustment?.exposure.exposure == 1.5)
+        #expect(session.activeLayer?.adjustment?.exposure.gamma == 1)
+    }
+
+    @Test func fileToolsExportImportOpenAndRejectUnexpectedOverwrite() async throws {
+        let workspace = ProjectWorkspace()
+        let router = MCPToolRouter(workspace: workspace)
+        _ = await router.call(name: "compositor_create_document", arguments: ["width": 24, "height": 16])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("compositor-mcp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let png = root.appendingPathComponent("export.png")
+        let exported = await router.call(name: "compositor_export_document", arguments: [
+            "path": png.path, "format": "png", "width": 12
+        ])
+        #expect(exported["isError"] as? Bool == false)
+        #expect(FileManager.default.fileExists(atPath: png.path))
+        #expect((exported["structuredContent"] as? [String: Any])?["height"] as? Int == 8)
+        let rejected = await router.call(name: "compositor_export_document", arguments: [
+            "path": png.path, "format": "png"
+        ])
+        #expect(rejected["isError"] as? Bool == true)
+
+        let imported = await router.call(name: "compositor_import_files", arguments: ["paths": [png.path]])
+        #expect(imported["isError"] as? Bool == false)
+        #expect(workspace.current.session.document?.layers.count == 2)
+
+        let project = root.appendingPathComponent("sample.comp")
+        try await ProjectStore.shared.save(try #require(workspace.current.session.projectSnapshot()), to: project)
+        let opened = await router.call(name: "compositor_open_document", arguments: ["path": project.path])
+        #expect(opened["isError"] as? Bool == false)
+        #expect(workspace.current.session.projectURL?.lastPathComponent == project.lastPathComponent)
+        #expect(workspace.current.session.document?.layers.count == 2)
     }
 
     @Test func rejectsNonLoopbackHostsAndCapsSessions() async throws {

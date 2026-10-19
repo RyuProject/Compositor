@@ -217,6 +217,68 @@ final class MCPToolRouter {
             tool("compositor_select_layer", "Make one layer the active layer in the current document.", schema(
                 properties: ["layer_id": string("Layer UUID from compositor_get_document.")], required: ["layer_id"]),
                  destructive: false, idempotent: true),
+            tool("compositor_apply_filter", "Apply a filter to the active raster layer or a specified layer, using Compositor's filter pipeline and one undo step.", schema(
+                properties: [
+                    "kind": enumString("Filter kind.", ["gaussian_blur", "motion_blur", "progressive_blur", "add_noise", "vignette", "bloom_glow", "dither", "scanlines", "tonal_contrast", "lens_correction", "camera_raw", "remove_background", "content_aware_fill", "curves", "exposure", "gradient_map", "grain", "black_white", "color_balance"]),
+                    "layer_id": string("Optional target layer UUID."),
+                    "settings": ["type": "object", "description": "Optional FilterSettings fields in camelCase; unspecified fields retain defaults.", "additionalProperties": true],
+                    "start_x": number("Progressive Blur start x in document pixels."), "start_y": number("Progressive Blur start y."),
+                    "end_x": number("Progressive Blur end x in document pixels."), "end_y": number("Progressive Blur end y.")
+                ], required: ["kind"]), destructive: true),
+            tool("compositor_get_filter_settings", "Inspect the complete default or most recently used filter settings object, including nested fields accepted by compositor_apply_filter.", schema(
+                properties: [
+                    "kind": enumString("Filter kind to describe.", ["gaussian_blur", "motion_blur", "progressive_blur", "add_noise", "vignette", "bloom_glow", "dither", "scanlines", "tonal_contrast", "lens_correction", "camera_raw", "remove_background", "content_aware_fill", "curves", "exposure", "gradient_map", "grain", "black_white", "color_balance"]),
+                    "source": enumString("Return defaults or the editor's current filter settings; defaults to default.", ["default", "current"])
+                ], required: ["kind"]), readOnly: true, destructive: false, idempotent: true),
+            tool("compositor_manage_adjustment", "Create or update an editable adjustment layer and its complete settings.", schema(
+                properties: [
+                    "action": enumString("Add or update an adjustment layer.", ["add", "update"]),
+                    "kind": enumString("Required when adding a layer.", ["hue_saturation", "levels", "curves", "exposure", "gradient_map", "grain", "add_noise", "gaussian_blur", "motion_blur", "invert", "black_white", "color_balance"]),
+                    "layer_id": string("Adjustment layer UUID required when updating."),
+                    "name": string("Optional name for a new adjustment layer."),
+                    "settings": ["type": "object", "description": "LayerAdjustment fields in camelCase; unspecified fields retain current values.", "additionalProperties": true]
+                ], required: ["action"]), destructive: true),
+            tool("compositor_manage_layer_effect", "Set, remove, or clear non-destructive effects on a pixel layer.", schema(
+                properties: [
+                    "action": enumString("Effect operation.", ["set", "remove", "clear_all"]),
+                    "layer_id": string("Target layer UUID."),
+                    "kind": enumString("Effect kind for set or remove.", ["stroke", "drop_shadow", "color_overlay", "inner_shadow", "outer_glow", "inner_glow"]),
+                    "enabled": ["type": "boolean"], "color": string("Effect color as #RRGGBB."),
+                    "opacity": number("Effect opacity from 0 to 1.", minimum: 0, maximum: 1),
+                    "size": number("Stroke or glow size in layer pixels.", minimum: 0, maximum: 5_000),
+                    "angle": number("Shadow angle in degrees."), "distance": number("Shadow distance in layer pixels.", minimum: 0, maximum: 5_000),
+                    "blur": number("Shadow blur in layer pixels.", minimum: 0, maximum: 5_000),
+                    "inside": ["type": "boolean", "description": "Place a stroke inside the layer outline."]
+                ], required: ["action", "layer_id"]), destructive: true),
+            tool("compositor_open_document", "Open an existing local .comp project in Compositor.", schema(
+                properties: ["path": string("Absolute local path to a .comp project.")], required: ["path"]), destructive: false),
+            tool("compositor_import_files", "Import local images as new layers into the current document.", schema(
+                properties: [
+                    "paths": ["type": "array", "minItems": 1, "maxItems": 100, "items": ["type": "string"], "description": "Absolute local image paths."],
+                    "x": number("Optional document-space placement x."), "y": number("Optional document-space placement y.")
+                ], required: ["paths"]), destructive: true),
+            tool("compositor_export_document", "Export the current visible canvas to a local image or PDF file; existing files require overwrite true.", schema(
+                properties: [
+                    "path": string("Absolute output path with an extension matching format."),
+                    "format": enumString("Output format.", ["png", "jpeg", "tiff", "pdf", "exr"]),
+                    "overwrite": ["type": "boolean", "description": "Replace an existing file when true; defaults to false."],
+                    "width": integer("Optional output width in pixels.", minimum: 1, maximum: DocumentLimits.maxSide),
+                    "height": integer("Optional output height in pixels.", minimum: 1, maximum: DocumentLimits.maxSide),
+                    "sixteen_bit": ["type": "boolean", "description": "Use 16-bit PNG or TIFF output."],
+                    "quality": number("JPEG quality from 0 to 1.", minimum: 0, maximum: 1),
+                    "background": string("JPEG or PDF background color as #RRGGBB.")
+                ], required: ["path", "format"]), destructive: true),
+            tool("compositor_edit_channel", "Load a color or alpha channel as a selection, or fill one channel of an 8-bit raster layer.", schema(
+                properties: [
+                    "action": enumString("Channel operation.", ["load_selection", "fill"]),
+                    "channel": enumString("Color or alpha component.", ["rgb", "red", "green", "blue", "alpha"]),
+                    "layer_id": string("Optional target layer UUID."),
+                    "source": enumString("Selection source: active layer or visible composite.", ["active_layer", "composite"]),
+                    "threshold": integer("Selection threshold from 0 to 255; defaults to 128.", minimum: 0, maximum: 255),
+                    "inverted": ["type": "boolean", "description": "Select values below the threshold."],
+                    "mode": enumString("Combine the channel selection with the current selection.", ["replace", "add", "subtract"]),
+                    "value": number("Fill value from 0 to 1.", minimum: 0, maximum: 1)
+                ], required: ["action", "channel"]), destructive: true),
             tool("compositor_history", "Undo or redo one Compositor document edit.", schema(
                 properties: ["action": enumString("History direction.", ["undo", "redo"])], required: ["action"]),
                  destructive: true),
@@ -250,6 +312,14 @@ final class MCPToolRouter {
             case "compositor_manage_layer": return try manageLayer(arguments)
             case "compositor_update_layer": return try updateLayer(arguments)
             case "compositor_select_layer": return try selectLayer(arguments)
+            case "compositor_apply_filter": return try await applyFilter(arguments)
+            case "compositor_get_filter_settings": return try filterSettingsDescription(arguments)
+            case "compositor_manage_adjustment": return try manageAdjustment(arguments)
+            case "compositor_manage_layer_effect": return try manageLayerEffect(arguments)
+            case "compositor_open_document": return try await openDocument(arguments)
+            case "compositor_import_files": return try await importFiles(arguments)
+            case "compositor_export_document": return try await exportDocument(arguments)
+            case "compositor_edit_channel": return try await editChannel(arguments)
             case "compositor_history": return try history(arguments)
             case "compositor_save_document": return try await saveDocument()
             case "compositor_render_document": return try await renderDocument(arguments)
@@ -421,7 +491,7 @@ final class MCPToolRouter {
         ]
     }
 
-    private func documentSummary(_ arguments: [String: Any] = [:]) throws -> [String: Any] {
+    func documentSummary(_ arguments: [String: Any] = [:]) throws -> [String: Any] {
         let tab = workspace.current
         guard let document = tab.session.document else { throw MCPToolFailure(message: "No document is open.") }
         let offset = try arguments.optionalInteger("layer_offset", range: 0...10_000) ?? 0
@@ -592,7 +662,7 @@ final class MCPToolRouter {
         return summary
     }
 
-    private func encodedJSONObject<T: Encodable>(_ value: T) -> Any {
+    func encodedJSONObject<T: Encodable>(_ value: T) -> Any {
         guard let data = try? JSONEncoder().encode(value),
               let object = try? JSONSerialization.jsonObject(with: data) else { return NSNull() }
         return object

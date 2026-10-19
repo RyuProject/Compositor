@@ -4,7 +4,7 @@ import Observation
 
 /// Filters from the Filter menu. Each runs on the active image layer, inside the selection if
 /// there is one, with a live preview and one undo step on OK.
-nonisolated enum FilterKind: String, CaseIterable, Sendable {
+nonisolated enum FilterKind: String, CaseIterable, Codable, Sendable {
     case gaussianBlur = "Gaussian Blur"
     case motionBlur = "Motion Blur"
     case progressiveBlur = "Progressive Blur"
@@ -54,13 +54,13 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
 
 /// Remove Background's two ways of working: Apple's own subject mask on its own, or that mask refined against the
 /// layer's detail, which recovers hair and fur but takes longer.
-nonisolated enum BackgroundQuality: String, CaseIterable, Sendable {
+nonisolated enum BackgroundQuality: String, CaseIterable, Codable, Sendable {
     case basic = "Basic"
     case advanced = "Advanced"
 }
 
 /// Every filter's settings; each filter reads only its own.
-nonisolated struct FilterSettings: Equatable, Sendable {
+nonisolated struct FilterSettings: Codable, Equatable, Sendable {
     /// Gaussian Blur radius in layer pixels (the blur's standard deviation), 0.1–250.
     var radius: Double = 5
     /// Gaussian Blur keeps every pixel's transparency: only the colors blur, from the layer's own pixels, so its

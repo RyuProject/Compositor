@@ -71,6 +71,12 @@ Tool calls affect the open Compositor tab and appear on the canvas immediately.
 | Hand / Zoom | `compositor_set_view` | Fit, pan and zoom |
 | Layers | `compositor_manage_layer` | Add, group, duplicate, rename, delete and place |
 | Layer selection | `compositor_select_layer` | Set the active layer |
+| Filters | `compositor_get_filter_settings`, `compositor_apply_filter` | Inspect default or current settings and apply any Filter menu effect |
+| Adjustment layers | `compositor_manage_adjustment` | Add or update an editable adjustment and its settings |
+| Layer effects | `compositor_manage_layer_effect` | Set, remove or clear strokes, shadows, overlays and glows |
+| Open / Import | `compositor_open_document`, `compositor_import_files` | Open a `.comp` project or import local images as layers |
+| Export | `compositor_export_document` | Export PNG, JPEG, TIFF, PDF or EXR, optionally resized |
+| Channels | `compositor_edit_channel` | Load RGB/color/alpha as a selection or fill an 8-bit layer channel |
 | History | `compositor_history` | Undo and redo |
 | Preview | `compositor_render_document` | Render a bounded PNG preview for visual inspection |
 | Save | `compositor_save_document` | Save an existing `.comp` project |
@@ -84,6 +90,17 @@ and accepted by the Pen APIs are always document pixels, including for rotated, 
 Omitted creative settings have stable defaults rather than inheriting whichever controls a person used last. Shapes,
 text, Pen paths, paint strokes and gradients can therefore be reproduced across fresh Compositor sessions.
 
+Call `compositor_get_filter_settings` to inspect all supported filter fields and nested defaults. Filter `settings` use
+the camelCase names in that result (for example `{"radius": 12}` for Gaussian Blur).
+Adjustment `settings` use the names in `LayerAdjustment` (for example `{"blurRadius": 12}` for a Gaussian Blur
+adjustment). Nested settings can be supplied as JSON objects; an update keeps omitted values. Compositor validates
+settings before applying them. Every filter, adjustment, effect and channel fill is one undoable document edit.
+
+`compositor_edit_channel` can load channels from the active layer or visible composite. Its `fill` action uses a value
+from 0 to 1 and respects the current selection. It converts editable Shape, Pen or Type content on that layer to pixels.
+It does not fill 16-bit or HDR channels, to preserve their precision. Opening and importing require absolute local file
+paths. Export requires a matching extension and refuses to replace an existing file unless `overwrite` is true.
+
 ## Safety and limits
 
 - The HTTP listener binds to `127.0.0.1` only, validates `Host` and `Origin`, and requires a random Bearer token.
@@ -93,6 +110,7 @@ text, Pen paths, paint strokes and gradients can therefore be reproduced across 
 - Coordinates, canvas sizes, path-node counts, text summaries and layer pages are bounded before allocation.
 - Preview images are composited directly at the requested size and capped at 16 megapixels instead of first rendering
   an oversized full-resolution canvas.
+- Channel tracing is bounded and exports validate output dimensions and file destinations before writing.
 
 ## Optional Pen-only file server
 

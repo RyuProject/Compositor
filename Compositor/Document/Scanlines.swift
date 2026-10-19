@@ -3,7 +3,7 @@ import CoreImage
 
 /// Filter › Scanlines: the picture as a CRT draws it, in lines of light on a dark screen. The lines can bead into dots,
 /// waver, rise with the picture's brightness into its shapes, stop below a threshold, and split their red and blue.
-nonisolated struct ScanlinesSettings: Equatable, Sendable {
+nonisolated struct ScanlinesSettings: Codable, Equatable, Sendable {
     static let lineSpacingRange: ClosedRange<Double> = 2...32
     static let wobbleRange: ClosedRange<Double> = 0...64
     static let displaceRange: ClosedRange<Double> = -100...100
