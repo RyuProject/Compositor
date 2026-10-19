@@ -63,9 +63,10 @@ Tool calls affect the open Compositor tab and appear on the canvas immediately.
 | Brush / Eraser / Retouch | `compositor_paint_stroke` | Brush, erase, healing, clone, blur, smudge and liquify paths |
 | Gradient | `compositor_apply_gradient` | Linear or radial layer or mask gradient |
 | Layer and live masks | `compositor_manage_mask` | Add, remove, enable, invert, link, copy and load as a selection |
-| Pen | `compositor_add_vector_path` | Editable anchors, cubic handles, path color and line width |
-| Shape | `compositor_add_shape` | Editable rectangle, ellipse or line |
-| Type | `compositor_add_text` | Editable text, font, color, alignment and text box |
+| Pen | `compositor_add_vector_path`, `compositor_update_vector_path` | Create, move, add or delete anchors and edit cubic handles, path color and width |
+| Pen appearance / selection | `compositor_apply_vector_path` | Fill, brush-stroke, clear appearances or load a path directly as a selection |
+| Shape | `compositor_add_shape`, `compositor_update_shape` | Create or restyle an editable rectangle, ellipse or line, including smooth corners |
+| Type | `compositor_add_text`, `compositor_update_text` | Create or edit content, font, color, alignment and text box |
 | Eyedropper | `compositor_sample_color` | Composite color at a document point |
 | Hand / Zoom | `compositor_set_view` | Fit, pan and zoom |
 | Layers | `compositor_manage_layer` | Add, group, duplicate, rename, delete and place |
@@ -77,7 +78,11 @@ Tool calls affect the open Compositor tab and appear on the canvas immediately.
 Several related interface modes share one API intentionally. For example, Brush, Eraser and retouching modes all take
 a document-space point path through `compositor_paint_stroke`; this gives an agent the same creative operation without
 fragile pointer automation. Pen `shape` paths are closed and Pen `line` paths are open. Creating a Pen path preserves
-its vector geometry without automatically painting or filling it.
+its vector geometry without automatically painting or filling it. Path nodes returned by `compositor_get_document`
+and accepted by the Pen APIs are always document pixels, including for rotated, scaled or flipped layers.
+
+Omitted creative settings have stable defaults rather than inheriting whichever controls a person used last. Shapes,
+text, Pen paths, paint strokes and gradients can therefore be reproduced across fresh Compositor sessions.
 
 ## Safety and limits
 

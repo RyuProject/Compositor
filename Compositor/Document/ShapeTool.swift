@@ -218,6 +218,46 @@ extension EditorSession {
         document?.layers[index].shape = LayerShape(style: shape.style, image: image)
     }
 
+    /// Changes a live shape's editable style without flattening it. The layer's document placement stays fixed;
+    /// its backing raster is regenerated at that placement so later transforms remain lossless.
+    @discardableResult
+    func updateShape(_ layerID: UUID, style: LayerShapeStyle) -> Bool {
+        guard canEditLayers, let document, let index = document.layers.firstIndex(where: { $0.id == layerID }) else { return false }
+        let layer = document.layers[index]
+        guard let shape = layer.liveShape, let asset = layer.asset,
+              style.cornerRadius.isFinite, (0...DocumentLimits.maxSideExtent).contains(style.cornerRadius),
+              style.lineWidth?.isFinite != false, style.lineWidth.map({ (1...5_000).contains($0) }) != false
+        else { return false }
+        if shape.style == style { return true }
+        let width = max(1, Int(layer.transform.size.width.rounded()))
+        let height = max(1, Int(layer.transform.size.height.rounded()))
+        let usedPixels = document.layers.indices.filter { $0 != index }.reduce(0) {
+            $0 + (document.layers[$1].asset.map { $0.image.width * $0.image.height } ?? 0)
+        }
+        guard width <= DocumentLimits.maxSide, height <= DocumentLimits.maxSide,
+              width <= Self.maxShapePixels / height,
+              width * height <= DocumentLimits.documentPixelBudget - usedPixels else { return false }
+        do {
+            let image = try Self.shapeImage(style.kind, size: CGSize(width: width, height: height),
+                                            color: style.color, cornerRadius: style.cornerRadius,
+                                            smoothing: style.smoothing == true,
+                                            lineWidth: style.lineWidth ?? 0,
+                                            start: style.start, end: style.end)
+            let thumbnail = try PixelInvert.thumbnail(of: image)
+            finishOpacityEdit()
+            beginEdit("Edit Shape")
+            if layer.mask?.placement == nil { self.document?.layers[index].mask?.placement = layer.maskTransform }
+            self.document?.layers[index].asset = ImportedImage(image: image, thumbnail: thumbnail, name: asset.name)
+            self.document?.layers[index].shape = LayerShape(style: style, image: image)
+            activeLayerID = layerID
+            endEdit()
+            return true
+        } catch {
+            brushError = error.localizedDescription
+            return false
+        }
+    }
+
     /// While a rounded rectangle is being scaled, the shape drawn at the size it's being dragged to, so its corners
     /// keep their radius during the drag rather than only once it's applied. At most 2048 pixels across (the radius
     /// scales down with it); nil for any other layer, which just stretches until the redraw at commit.

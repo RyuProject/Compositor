@@ -14,6 +14,7 @@ final class MCPToolRouter {
     static let maximumCoordinate = Double(DocumentLimits.maxSide)
     static let documentVectorNodeLimit = 10_000
     static let documentTextCharacterLimit = 200_000
+    static let documentTextStyleRunLimit = 10_000
     let workspace: ProjectWorkspace
 
     init(workspace: ProjectWorkspace) { self.workspace = workspace }
@@ -38,8 +39,9 @@ final class MCPToolRouter {
                     "kind": enumString("Shape type.", ["rectangle", "ellipse", "line"]),
                     "start_x": number("First corner or line endpoint x."), "start_y": number("First corner or line endpoint y."),
                     "end_x": number("Opposite corner or line endpoint x."), "end_y": number("Opposite corner or line endpoint y."),
-                    "color": string("Fill or stroke color as #RRGGBB. Defaults to the foreground color."),
+                    "color": string("Fill or stroke color as #RRGGBB. Defaults to #000000."),
                     "corner_radius": number("Rectangle corner radius in document pixels.", minimum: 0, maximum: 150_000),
+                    "smooth_corners": ["type": "boolean", "description": "Use 60% continuous corner smoothing on a rounded rectangle."],
                     "line_width": number("Line thickness in document pixels.", minimum: 1, maximum: 5_000)
                 ], required: ["kind", "start_x", "start_y", "end_x", "end_y"]), destructive: false),
             tool("compositor_add_text", "Use Compositor's Type tool to add an editable text layer. The x and y values are the text box's top-left document coordinates.", schema(
@@ -67,10 +69,62 @@ final class MCPToolRouter {
                                 "out_x": number("Outgoing handle x coordinate; defaults to x."),
                                 "out_y": number("Outgoing handle y coordinate; defaults to y.")
                               ], required: ["x", "y"])],
-                    "color": string("Editable path color as #RRGGBB. Defaults to the current foreground color."),
+                    "color": string("Editable path color as #RRGGBB. Defaults to #000000."),
                     "line_width": number("Editable path width in document pixels.", minimum: 1, maximum: 5_000),
                     "closed": ["type": "boolean", "description": "Shapes must be closed and lines must remain open."]
                 ], required: ["mode", "nodes"]), destructive: false),
+            tool("compositor_update_vector_path", "Replace the anchors or editable appearance of an existing Pen path. Node coordinates are document pixels; replacing nodes supports adding, deleting, moving, and changing handles in one atomic edit.", schema(
+                properties: [
+                    "layer_id": string("Editable vector-path layer UUID."),
+                    "mode": enumString("A shape is closed; a line remains open.", ["shape", "line"]),
+                    "nodes": ["type": "array", "minItems": 2, "maxItems": 10_000,
+                              "description": "Complete replacement list of anchors and optional cubic handles in document pixels.",
+                              "items": schema(properties: [
+                                "x": number("Anchor x coordinate."), "y": number("Anchor y coordinate."),
+                                "in_x": number("Incoming handle x coordinate; defaults to x."),
+                                "in_y": number("Incoming handle y coordinate; defaults to y."),
+                                "out_x": number("Outgoing handle x coordinate; defaults to x."),
+                                "out_y": number("Outgoing handle y coordinate; defaults to y.")
+                              ], required: ["x", "y"])],
+                    "subpath_starts": ["type": "array", "maxItems": 9_999,
+                                       "description": "Optional node indexes that begin additional disconnected line subpaths.",
+                                       "items": ["type": "integer", "minimum": 1, "maximum": 9_999]],
+                    "color": string("Editable path color as #RRGGBB."),
+                    "line_width": number("Editable path width in document pixels.", minimum: 1, maximum: 5_000)
+                ], required: ["layer_id"]), destructive: true),
+            tool("compositor_apply_vector_path", "Fill, brush-stroke, clear an appearance from, or load an editable Pen path as a selection.", schema(
+                properties: [
+                    "layer_id": string("Editable vector-path layer UUID."),
+                    "action": enumString("Path operation.", ["fill", "stroke", "clear_fill", "clear_stroke", "clear_erasures", "load_selection"]),
+                    "color": string("Fill or stroke color as #RRGGBB. Defaults to #000000."),
+                    "size": number("Brush-stroke diameter in document pixels. Defaults to 40.", minimum: 1, maximum: 2_000),
+                    "hardness": number("Brush-stroke hardness from 0 through 1. Defaults to 1.", minimum: 0, maximum: 1),
+                    "opacity": number("Brush-stroke opacity from 0 through 1. Defaults to 1.", minimum: 0.01, maximum: 1),
+                    "mode": enumString("For load_selection, how the path combines with the current selection.", ["replace", "add", "subtract"])
+                ], required: ["layer_id", "action"]), destructive: true),
+            tool("compositor_update_shape", "Update the editable style of an existing Shape layer without rasterizing it.", schema(
+                properties: [
+                    "layer_id": string("Editable shape layer UUID."),
+                    "kind": enumString("Shape type.", ["rectangle", "ellipse", "line"]),
+                    "color": string("Fill or stroke color as #RRGGBB."),
+                    "corner_radius": number("Rectangle corner radius in document pixels.", minimum: 0, maximum: 150_000),
+                    "smooth_corners": ["type": "boolean", "description": "Use 60% continuous corner smoothing on a rounded rectangle."],
+                    "line_width": number("Line thickness in document pixels.", minimum: 1, maximum: 5_000)
+                ], required: ["layer_id"]), destructive: true),
+            tool("compositor_update_text", "Update the content and whole-text style of an existing editable Type layer.", schema(
+                properties: [
+                    "layer_id": string("Editable text layer UUID."),
+                    "content": string("Replacement text content, including line breaks."),
+                    "font_name": string("Installed PostScript font name."),
+                    "font_size": number("Font size in layer pixels.", minimum: 1, maximum: 2_000),
+                    "color": string("Whole-text color as #RRGGBB."),
+                    "alignment": enumString("Paragraph alignment.", ["left", "center", "right"]),
+                    "tracking": number("Character spacing from -100 through 1000.", minimum: -100, maximum: 1_000),
+                    "leading": number("Line height in pixels; 0 uses automatic leading.", minimum: 0, maximum: 5_000),
+                    "box_width": number("Fixed paragraph-box width.", minimum: 16, maximum: 300_000),
+                    "box_height": number("Fixed paragraph-box height.", minimum: 16, maximum: 300_000),
+                    "clear_box": ["type": "boolean", "description": "When true, turn fixed-box text into point text."]
+                ], required: ["layer_id"]), destructive: true),
             tool("compositor_set_selection", "Use Marquee, Lasso, Magic Wand, or Object Selection, or modify the current selection. Coordinates are document pixels.", schema(
                 properties: [
                     "action": enumString("Selection operation.", ["rectangle", "ellipse", "polygon", "wand", "object", "all", "none", "invert"]),
@@ -102,6 +156,7 @@ final class MCPToolRouter {
                     "hardness": number("Brush hardness from 0 through 1.", minimum: 0, maximum: 1),
                     "opacity": number("Stroke opacity or retouching strength from 0 through 1.", minimum: 0.01, maximum: 1),
                     "blur_radius": number("Blur radius in pixels for Blur mode.", minimum: 0.1, maximum: 250),
+                    "healing_mode": enumString("Spot Healing method.", ["content_aware", "create_texture", "proximity_match"]),
                     "source_x": number("Clone Stamp source x coordinate."), "source_y": number("Clone Stamp source y coordinate."),
                     "aligned": ["type": "boolean"], "sample_all_layers": ["type": "boolean"]
                 ], required: ["mode", "points"]), destructive: true),
@@ -181,6 +236,10 @@ final class MCPToolRouter {
             case "compositor_add_shape": return try addShape(arguments)
             case "compositor_add_text": return try addText(arguments)
             case "compositor_add_vector_path": return try addVectorPath(arguments)
+            case "compositor_update_vector_path": return try updateVectorPath(arguments)
+            case "compositor_apply_vector_path": return try applyVectorPath(arguments)
+            case "compositor_update_shape": return try updateShape(arguments)
+            case "compositor_update_text": return try updateText(arguments)
             case "compositor_set_selection": return try await setSelection(arguments)
             case "compositor_paint_stroke": return try paintStroke(arguments)
             case "compositor_apply_gradient": return try await applyGradient(arguments)
@@ -249,7 +308,7 @@ final class MCPToolRouter {
         if let value = try arguments.optionalString("color") {
             guard let parsed = PaletteColor(hex: value) else { throw MCPToolFailure(message: "color must look like #3366FF.") }
             color = parsed
-        } else { color = session.foregroundColor }
+        } else { color = PaletteColor(red: 0, green: 0, blue: 0) }
         let lineWidth = try arguments.optionalNumber("line_width") ?? 4
         guard (1...5_000).contains(lineWidth) else { throw MCPToolFailure(message: "line_width must be between 1 and 5000.") }
         let closed = try arguments.optionalBoolean("closed") ?? (mode == .shape)
@@ -371,6 +430,7 @@ final class MCPToolRouter {
         let page = offset < end ? document.layers[offset..<end] : document.layers[0..<0]
         var remainingNodes = Self.documentVectorNodeLimit
         var remainingText = Self.documentTextCharacterLimit
+        var remainingTextRuns = Self.documentTextStyleRunLimit
         let layers = page.map { layer in
             let nodeCount = layer.liveVectorPath?.style.nodes.count ?? 0
             let nodeLimit = min(remainingNodes, nodeCount)
@@ -378,7 +438,11 @@ final class MCPToolRouter {
             let textCount = layer.liveText?.style.content.count ?? 0
             let textLimit = min(remainingText, textCount)
             remainingText -= textLimit
-            return layerSummary(layer, vectorNodeLimit: nodeLimit, textCharacterLimit: textLimit)
+            let runCount = (layer.liveText?.style.colorRuns?.count ?? 0) + (layer.liveText?.style.fontRuns?.count ?? 0)
+            let runLimit = min(remainingTextRuns, runCount)
+            remainingTextRuns -= runLimit
+            return layerSummary(layer, vectorNodeLimit: nodeLimit, textCharacterLimit: textLimit,
+                                textStyleRunLimit: runLimit)
         }
         var summary: [String: Any] = [
             "document_id": document.id.uuidString,
@@ -418,7 +482,7 @@ final class MCPToolRouter {
     }
 
     func layerSummary(_ layer: ImageLayer, vectorNodeLimit: Int? = nil,
-                      textCharacterLimit: Int? = nil) -> [String: Any] {
+                      textCharacterLimit: Int? = nil, textStyleRunLimit: Int? = nil) -> [String: Any] {
         var summary: [String: Any] = [
             "id": layer.id.uuidString,
             "name": layer.name,
@@ -440,16 +504,35 @@ final class MCPToolRouter {
         ]
         if let vector = layer.liveVectorPath?.style {
             let limit = min(vector.nodes.count, max(0, vectorNodeLimit ?? vector.nodes.count))
+            let transform = layer.transform.unitToDocument
             var vectorSummary: [String: Any] = [
                 "mode": vector.mode.rawValue.lowercased(), "closed": vector.closed,
                 "color": "#" + PaletteColor(red: vector.red, green: vector.green, blue: vector.blue).hex,
                 "line_width": vector.lineWidth,
-                "coordinate_space": "normalized_layer_bounds",
-                "nodes": vector.nodes.prefix(limit).map { [
-                    "x": $0.anchor.x, "y": $0.anchor.y,
-                    "in_x": $0.inHandle.x, "in_y": $0.inHandle.y,
-                    "out_x": $0.outHandle.x, "out_y": $0.outHandle.y
-                ] }
+                "coordinate_space": "document_pixels",
+                "subpath_starts": vector.subpathStarts ?? [],
+                "fill": vector.fill.map { [
+                    "color": "#" + PaletteColor(red: $0.red, green: $0.green, blue: $0.blue).hex
+                ] as [String: Any] as Any } ?? NSNull(),
+                "brush_stroke": vector.brushStroke.map { [
+                    "color": "#" + PaletteColor(red: $0.red, green: $0.green, blue: $0.blue).hex,
+                    "diameter": $0.diameter, "hardness": $0.hardness, "opacity": $0.opacity
+                ] as [String: Any] as Any } ?? NSNull(),
+                "erase_strokes": (vector.eraseStrokes ?? []).map { [
+                    "point_count": $0.points.count,
+                    "diameter_x": $0.diameterX * layer.transform.size.width,
+                    "diameter_y": $0.diameterY * layer.transform.size.height
+                ] },
+                "nodes": vector.nodes.prefix(limit).map {
+                    let anchor = $0.anchor.applying(transform)
+                    let incoming = $0.inHandle.applying(transform)
+                    let outgoing = $0.outHandle.applying(transform)
+                    return [
+                        "x": anchor.x, "y": anchor.y,
+                        "in_x": incoming.x, "in_y": incoming.y,
+                        "out_x": outgoing.x, "out_y": outgoing.y
+                    ]
+                }
             ]
             if limit < vector.nodes.count {
                 vectorSummary["node_count"] = vector.nodes.count
@@ -461,26 +544,58 @@ final class MCPToolRouter {
             summary["shape"] = [
                 "kind": shape.kind.rawValue.lowercased(), "color": "#" + shape.color.hex,
                 "corner_radius": shape.cornerRadius,
-                "line_width": shape.lineWidth.map { $0 as Any } ?? NSNull()
+                "smooth_corners": shape.smoothing == true,
+                "line_width": shape.lineWidth.map { $0 as Any } ?? NSNull(),
+                "start": shape.start.map { ["x": $0.x, "y": $0.y] as [String: Any] as Any } ?? NSNull(),
+                "end": shape.end.map { ["x": $0.x, "y": $0.y] as [String: Any] as Any } ?? NSNull()
             ]
         }
         if let text = layer.liveText?.style {
             let limit = min(text.content.count, max(0, textCharacterLimit ?? text.content.count))
+            let requestedRunLimit = max(0, textStyleRunLimit ?? Int.max)
+            let colorRunLimit = min(text.colorRuns?.count ?? 0, requestedRunLimit)
+            let fontRunLimit = min(text.fontRuns?.count ?? 0, requestedRunLimit - colorRunLimit)
             var textSummary: [String: Any] = [
                 "content": String(text.content.prefix(limit)), "font_name": text.fontName, "font_size": text.fontSize,
                 "color": "#" + PaletteColor(red: text.red, green: text.green, blue: text.blue).hex,
                 "alignment": text.alignment.rawValue.lowercased(), "tracking": text.tracking,
                 "leading": text.leading,
                 "box_width": text.boxSize.map { $0.width as Any } ?? NSNull(),
-                "box_height": text.boxSize.map { $0.height as Any } ?? NSNull()
+                "box_height": text.boxSize.map { $0.height as Any } ?? NSNull(),
+                "color_runs": (text.colorRuns ?? []).prefix(colorRunLimit).map { [
+                    "location": $0.location, "length": $0.length,
+                    "color": "#" + PaletteColor(red: $0.red, green: $0.green, blue: $0.blue).hex
+                ] },
+                "font_runs": (text.fontRuns ?? []).prefix(fontRunLimit).map { [
+                    "location": $0.location, "length": $0.length, "font_name": $0.fontName
+                ] }
             ]
             if limit < text.content.count {
                 textSummary["character_count"] = text.content.count
                 textSummary["content_truncated"] = true
             }
+            if colorRunLimit < (text.colorRuns?.count ?? 0) {
+                textSummary["color_run_count"] = text.colorRuns?.count ?? 0
+                textSummary["color_runs_truncated"] = true
+            }
+            if fontRunLimit < (text.fontRuns?.count ?? 0) {
+                textSummary["font_run_count"] = text.fontRuns?.count ?? 0
+                textSummary["font_runs_truncated"] = true
+            }
             summary["text"] = textSummary
         }
+        if let adjustment = layer.adjustment { summary["adjustment"] = encodedJSONObject(adjustment) }
+        if let effects = layer.effects { summary["effects"] = encodedJSONObject(effects) }
+        if let image = layer.asset?.image {
+            summary["raster_size"] = ["width": image.width, "height": image.height]
+        }
         return summary
+    }
+
+    private func encodedJSONObject<T: Encodable>(_ value: T) -> Any {
+        guard let data = try? JSONEncoder().encode(value),
+              let object = try? JSONSerialization.jsonObject(with: data) else { return NSNull() }
+        return object
     }
 
     private func maskSummary(_ layer: ImageLayer) -> Any {

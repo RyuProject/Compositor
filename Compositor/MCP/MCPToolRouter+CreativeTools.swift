@@ -20,7 +20,8 @@ extension MCPToolRouter {
         } else if hypot(end.x - start.x, end.y - start.y) < 0.5 {
             throw MCPToolFailure(message: "A line needs two different endpoints.")
         }
-        if let value = try arguments.optionalString("color") { session.foregroundColor = try parseColor(value, key: "color") }
+        session.foregroundColor = try arguments.optionalString("color").map { try parseColor($0, key: "color") }
+            ?? PaletteColor(red: 0, green: 0, blue: 0)
         let cornerRadius = try arguments.optionalNumber("corner_radius") ?? 0
         let lineWidth = try arguments.optionalNumber("line_width") ?? 4
         guard (0...150_000).contains(cornerRadius), (1...5_000).contains(lineWidth) else {
@@ -32,6 +33,7 @@ extension MCPToolRouter {
         session.shapeKind = kind
         session.shapeCornerRadius = cornerRadius
         session.shapeLineWidth = lineWidth
+        session.shapeSmoothing = try arguments.optionalBoolean("smooth_corners") ?? false
         session.beginShape(at: start)
         session.dragShape(to: end, square: false, fromCenter: false)
         session.finishShape()
@@ -49,7 +51,7 @@ extension MCPToolRouter {
             throw MCPToolFailure(message: "content cannot be empty.")
         }
         let origin = try arguments.point(x: "x", y: "y")
-        var style = session.textDefaults
+        var style = LayerTextStyle()
         style.content = content
         style.colorRuns = nil
         style.fontRuns = nil
@@ -90,6 +92,304 @@ extension MCPToolRouter {
             throw MCPToolFailure(message: session.brushError ?? "The text layer could not be created.")
         }
         return try result(["layer": layerSummary(layer)])
+    }
+
+    func updateVectorPath(_ arguments: [String: Any]) throws -> [String: Any] {
+        let session = try editableSession()
+        let layerID = try arguments.requiredUUID("layer_id")
+        try select(layerID, in: session)
+        guard let layer = session.activeLayer, var style = layer.liveVectorPath?.style else {
+            throw MCPToolFailure(message: "The target is not an editable vector path.")
+        }
+        var changed = false
+        if let value = try arguments.optionalString("mode") {
+            guard let mode = PenMode.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else {
+                throw MCPToolFailure(message: "mode must be shape or line.")
+            }
+            style.mode = mode
+            style.closed = mode == .shape
+            if mode == .shape { style.subpathStarts = nil }
+            changed = true
+        }
+        if arguments.keys.contains("nodes") {
+            guard let rawNodes = arguments["nodes"] as? [[String: Any]], rawNodes.count <= 10_000 else {
+                throw MCPToolFailure(message: "nodes must contain at most 10000 points.")
+            }
+            let minimum = style.mode == .shape ? 3 : 2
+            guard rawNodes.count >= minimum else {
+                throw MCPToolFailure(message: "\(style.mode.rawValue) mode needs at least \(minimum) nodes.")
+            }
+            let inverse = layer.transform.unitToDocument.inverted()
+            func point(_ node: [String: Any], _ xKey: String, _ yKey: String,
+                       fallback: CGPoint? = nil) throws -> CGPoint {
+                let x = try node.optionalNumber(xKey) ?? fallback.map { Double($0.x) }
+                let y = try node.optionalNumber(yKey) ?? fallback.map { Double($0.y) }
+                guard let x, let y, abs(x) <= Self.maximumCoordinate, abs(y) <= Self.maximumCoordinate else {
+                    throw MCPToolFailure(message: "Every node coordinate must be finite and within Compositor's coordinate limits.")
+                }
+                return CGPoint(x: x, y: y)
+            }
+            style.nodes = try rawNodes.map { node in
+                let anchor = try point(node, "x", "y")
+                let incoming = try point(node, "in_x", "in_y", fallback: anchor)
+                let outgoing = try point(node, "out_x", "out_y", fallback: anchor)
+                return VectorPathNode(anchor: anchor.applying(inverse),
+                                      inHandle: incoming.applying(inverse),
+                                      outHandle: outgoing.applying(inverse))
+            }
+            // One replacement node list describes one continuous path. Erasing can produce several subpaths, but
+            // clients replace those explicitly rather than inheriting stale split indexes.
+            style.subpathStarts = nil
+            changed = true
+        }
+        if arguments.keys.contains("subpath_starts") {
+            guard let values = arguments["subpath_starts"] as? [Any], values.count <= 9_999 else {
+                throw MCPToolFailure(message: "subpath_starts must be an array of node indexes.")
+            }
+            let starts = try values.map { value -> Int in
+                guard let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else {
+                    throw MCPToolFailure(message: "Every subpath start must be an integer.")
+                }
+                let number = value.doubleValue
+                guard number.rounded() == number,
+                      number >= 1, number < Double(style.nodes.count) else {
+                    throw MCPToolFailure(message: "Every subpath start must identify a node after the first one.")
+                }
+                return Int(number)
+            }
+            guard style.mode == .line || starts.isEmpty else {
+                throw MCPToolFailure(message: "Closed shape paths cannot contain disconnected subpaths.")
+            }
+            let boundaries = [0] + starts + [style.nodes.count]
+            let hasShortSubpath = zip(boundaries, boundaries.dropFirst()).contains { $1 - $0 < 2 }
+            guard starts == starts.sorted(), Set(starts).count == starts.count, !hasShortSubpath else {
+                throw MCPToolFailure(message: "subpath_starts must be sorted, unique, and leave at least two nodes in every line subpath.")
+            }
+            style.subpathStarts = starts.isEmpty ? nil : starts
+            changed = true
+        }
+        if let value = try arguments.optionalString("color") {
+            let color = try parseColor(value, key: "color")
+            style.red = color.red; style.green = color.green; style.blue = color.blue
+            changed = true
+        }
+        if let value = try arguments.optionalNumber("line_width") {
+            guard (1...5_000).contains(value) else {
+                throw MCPToolFailure(message: "line_width must be between 1 and 5000.")
+            }
+            style.lineWidth = value
+            changed = true
+        }
+        guard changed else { throw MCPToolFailure(message: "No vector-path properties were supplied.") }
+        let minimum = style.mode == .shape ? 3 : 2
+        guard style.nodes.count >= minimum else {
+            throw MCPToolFailure(message: "\(style.mode.rawValue) mode needs at least \(minimum) nodes.")
+        }
+        guard session.updateVectorPath(layerID, with: style) else {
+            throw MCPToolFailure(message: session.brushError ?? "The vector path could not be updated.")
+        }
+        guard let updated = session.document?.layers.first(where: { $0.id == layerID }) else {
+            throw MCPToolFailure(message: "The vector path is no longer available.")
+        }
+        return try result(["layer": layerSummary(updated)])
+    }
+
+    func applyVectorPath(_ arguments: [String: Any]) throws -> [String: Any] {
+        let session = try editableSession()
+        let layerID = try arguments.requiredUUID("layer_id")
+        try select(layerID, in: session)
+        guard let path = session.activeLayer?.liveVectorPath else {
+            throw MCPToolFailure(message: "The target is not an editable vector path.")
+        }
+        let action = try arguments.requiredString("action").lowercased()
+        switch action {
+        case "fill":
+            guard session.canFillPenPath else { throw MCPToolFailure(message: "This path cannot be filled right now.") }
+            let oldColor = session.foregroundColor
+            session.foregroundColor = try arguments.optionalString("color").map { try parseColor($0, key: "color") }
+                ?? PaletteColor(red: 0, green: 0, blue: 0)
+            session.fillPenPathWithForeground()
+            session.foregroundColor = oldColor
+            guard session.activeLayer?.liveVectorPath?.style.fill != nil else {
+                throw MCPToolFailure(message: session.brushError ?? "The path could not be filled.")
+            }
+        case "stroke":
+            guard session.canStrokePenPath else { throw MCPToolFailure(message: "This path cannot be stroked right now.") }
+            let oldColor = session.foregroundColor, oldSettings = session.brushSettings
+            let color = try arguments.optionalString("color").map { try parseColor($0, key: "color") }
+                ?? PaletteColor(red: 0, green: 0, blue: 0)
+            var settings = BrushSettings()
+            settings.diameter = try arguments.optionalNumber("size") ?? settings.diameter
+            settings.hardness = try arguments.optionalNumber("hardness") ?? settings.hardness
+            settings.opacity = try arguments.optionalNumber("opacity") ?? settings.opacity
+            guard (1...2_000).contains(settings.diameter), (0...1).contains(settings.hardness),
+                  (0.01...1).contains(settings.opacity) else {
+                throw MCPToolFailure(message: "One or more stroke settings are outside the supported range.")
+            }
+            settings.red = color.red; settings.green = color.green; settings.blue = color.blue
+            session.foregroundColor = color
+            session.brushSettings = settings
+            session.strokePenPathWithBrush()
+            session.foregroundColor = oldColor
+            session.brushSettings = oldSettings
+            guard session.activeLayer?.liveVectorPath?.style.brushStroke != nil else {
+                throw MCPToolFailure(message: session.brushError ?? "The path could not be stroked.")
+            }
+        case "clear_fill", "clear_stroke", "clear_erasures":
+            var style = path.style
+            if action == "clear_fill" { style.fill = nil }
+            if action == "clear_stroke" { style.brushStroke = nil }
+            if action == "clear_erasures" { style.eraseStrokes = nil }
+            guard session.updateVectorPath(layerID, with: style, editName: "Clear Path Appearance") else {
+                throw MCPToolFailure(message: session.brushError ?? "The path appearance could not be cleared.")
+            }
+        case "load_selection":
+            session.loadPenPathSelection(mode: try selectionMode(arguments))
+            guard session.selection != nil else {
+                throw MCPToolFailure(message: "The path could not be loaded as a selection.")
+            }
+        default:
+            throw MCPToolFailure(message: "Unknown vector-path action: \(action).")
+        }
+        guard let updated = session.document?.layers.first(where: { $0.id == layerID }) else {
+            throw MCPToolFailure(message: "The vector path is no longer available.")
+        }
+        var response: [String: Any] = ["layer": layerSummary(updated)]
+        if action == "load_selection" { response["selection"] = selectionSummary(session.selection) }
+        return try result(response)
+    }
+
+    func updateShape(_ arguments: [String: Any]) throws -> [String: Any] {
+        let session = try editableSession()
+        let layerID = try arguments.requiredUUID("layer_id")
+        try select(layerID, in: session)
+        guard var style = session.activeLayer?.liveShape?.style else {
+            throw MCPToolFailure(message: "The target is not an editable shape.")
+        }
+        var changed = false
+        if let value = try arguments.optionalString("kind") {
+            guard let kind = ShapeKind.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else {
+                throw MCPToolFailure(message: "kind must be rectangle, ellipse, or line.")
+            }
+            style.kind = kind
+            changed = true
+        }
+        if let value = try arguments.optionalString("color") {
+            let color = try parseColor(value, key: "color")
+            style.red = color.red; style.green = color.green; style.blue = color.blue
+            changed = true
+        }
+        if let value = try arguments.optionalNumber("corner_radius") {
+            guard (0...150_000).contains(value) else {
+                throw MCPToolFailure(message: "corner_radius must be between 0 and 150000.")
+            }
+            style.cornerRadius = value
+            changed = true
+        }
+        if let value = try arguments.optionalBoolean("smooth_corners") {
+            style.smoothing = value ? true : nil
+            changed = true
+        }
+        if let value = try arguments.optionalNumber("line_width") {
+            guard (1...5_000).contains(value) else {
+                throw MCPToolFailure(message: "line_width must be between 1 and 5000.")
+            }
+            style.lineWidth = value
+            changed = true
+        }
+        guard changed else { throw MCPToolFailure(message: "No shape properties were supplied.") }
+        switch style.kind {
+        case .line:
+            guard !arguments.keys.contains("corner_radius"), !arguments.keys.contains("smooth_corners") else {
+                throw MCPToolFailure(message: "Lines do not have rounded corners.")
+            }
+            style.cornerRadius = 0
+            style.smoothing = nil
+            style.lineWidth = style.lineWidth ?? 4
+        case .ellipse:
+            guard !arguments.keys.contains("corner_radius"), !arguments.keys.contains("smooth_corners"),
+                  !arguments.keys.contains("line_width") else {
+                throw MCPToolFailure(message: "Ellipses do not use corner or line-width settings.")
+            }
+            style.cornerRadius = 0
+            style.smoothing = nil
+            style.lineWidth = nil; style.start = nil; style.end = nil
+        case .rectangle:
+            guard !arguments.keys.contains("line_width") else {
+                throw MCPToolFailure(message: "Rectangles do not use line_width.")
+            }
+            style.lineWidth = nil; style.start = nil; style.end = nil
+        }
+        session.brushError = nil
+        guard session.updateShape(layerID, style: style) else {
+            throw MCPToolFailure(message: session.brushError ?? "The shape could not be updated.")
+        }
+        guard let updated = session.document?.layers.first(where: { $0.id == layerID }) else {
+            throw MCPToolFailure(message: "The shape is no longer available.")
+        }
+        return try result(["layer": layerSummary(updated)])
+    }
+
+    func updateText(_ arguments: [String: Any]) throws -> [String: Any] {
+        let session = try editableSession()
+        let layerID = try arguments.requiredUUID("layer_id")
+        try select(layerID, in: session)
+        guard let layer = session.activeLayer, var style = layer.liveText?.style, let document = session.document else {
+            throw MCPToolFailure(message: "The target is not editable text.")
+        }
+        var changed = false
+        if arguments.keys.contains("content") {
+            style.content = try arguments.requiredString("content")
+            style.colorRuns = nil; style.fontRuns = nil
+            changed = true
+        }
+        if let value = try arguments.optionalString("font_name") {
+            guard !value.isEmpty, value.count <= 200, !value.contains(where: \.isNewline) else {
+                throw MCPToolFailure(message: "font_name is invalid.")
+            }
+            style.fontName = value; style.fontRuns = nil
+            changed = true
+        }
+        if let value = try arguments.optionalNumber("font_size") { style.fontSize = value; changed = true }
+        if let value = try arguments.optionalString("color") {
+            let color = try parseColor(value, key: "color")
+            style.red = color.red; style.green = color.green; style.blue = color.blue
+            style.colorRuns = nil
+            changed = true
+        }
+        if let value = try arguments.optionalString("alignment") {
+            guard let alignment = TextAlignment.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else {
+                throw MCPToolFailure(message: "alignment must be left, center, or right.")
+            }
+            style.alignment = alignment; changed = true
+        }
+        if let value = try arguments.optionalNumber("tracking") { style.tracking = value; changed = true }
+        if let value = try arguments.optionalNumber("leading") { style.leading = value; changed = true }
+        let clearBox = try arguments.optionalBoolean("clear_box") ?? false
+        let boxWidth = try arguments.optionalNumber("box_width")
+        let boxHeight = try arguments.optionalNumber("box_height")
+        guard (boxWidth == nil) == (boxHeight == nil) else {
+            throw MCPToolFailure(message: "box_width and box_height must be supplied together.")
+        }
+        guard !clearBox || boxWidth == nil else {
+            throw MCPToolFailure(message: "clear_box cannot be combined with box_width or box_height.")
+        }
+        if clearBox { style.boxSize = nil; changed = true }
+        if let boxWidth, let boxHeight {
+            style.boxSize = CGSize(width: boxWidth, height: boxHeight); changed = true
+        }
+        guard changed else { throw MCPToolFailure(message: "No text properties were supplied.") }
+        guard style.isValid else { throw MCPToolFailure(message: "The requested text settings are outside Compositor's limits.") }
+        session.brushError = nil
+        let draft = TextDraft(documentID: document.id, layerID: layerID, origin: layer.origin,
+                              transform: layer.transform, style: style)
+        guard session.applyText(draft) else {
+            throw MCPToolFailure(message: session.brushError ?? "The text layer could not be updated.")
+        }
+        guard let updated = session.document?.layers.first(where: { $0.id == layerID }) else {
+            throw MCPToolFailure(message: "The text layer is no longer available.")
+        }
+        return try result(["layer": layerSummary(updated)])
     }
 
     func setSelection(_ arguments: [String: Any]) async throws -> [String: Any] {
@@ -176,7 +476,7 @@ extension MCPToolRouter {
             throw MCPToolFailure(message: "Only paint and blur modes can edit a layer mask.")
         }
         session.selectTool(tool)
-        var settings = session.brushSettings
+        var settings = BrushSettings()
         settings.diameter = try arguments.optionalNumber("size") ?? settings.diameter
         settings.hardness = try arguments.optionalNumber("hardness") ?? settings.hardness
         settings.opacity = try arguments.optionalNumber("opacity") ?? settings.opacity
@@ -192,6 +492,14 @@ extension MCPToolRouter {
             session.maskPaintWhite = color.red + color.green + color.blue >= 1.5
         }
         session.brushSettings = settings
+        if mode == "spot_healing" {
+            switch try arguments.optionalString("healing_mode")?.lowercased() ?? "content_aware" {
+            case "content_aware": session.spotHealingMode = .contentAware
+            case "create_texture": session.spotHealingMode = .createTexture
+            case "proximity_match": session.spotHealingMode = .proximityMatch
+            default: throw MCPToolFailure(message: "healing_mode must be content_aware, create_texture, or proximity_match.")
+            }
+        }
         if mode == "clone_stamp" {
             let source = try arguments.point(x: "source_x", y: "source_y")
             session.setCloneSource(source)
@@ -227,9 +535,11 @@ extension MCPToolRouter {
         guard hypot(end.x - start.x, end.y - start.y) >= 0.5 else {
             throw MCPToolFailure(message: "The gradient start and end must be different.")
         }
-        if let value = try arguments.optionalString("foreground") { session.foregroundColor = try parseColor(value, key: "foreground") }
-        if let value = try arguments.optionalString("background") { session.backgroundColor = try parseColor(value, key: "background") }
-        var settings = session.gradientSettings
+        session.foregroundColor = try arguments.optionalString("foreground").map { try parseColor($0, key: "foreground") }
+            ?? PaletteColor(red: 0, green: 0, blue: 0)
+        session.backgroundColor = try arguments.optionalString("background").map { try parseColor($0, key: "background") }
+            ?? PaletteColor(red: 1, green: 1, blue: 1)
+        var settings = GradientSettings()
         if let value = try arguments.optionalString("shape") {
             guard let shape = GradientShape.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else {
                 throw MCPToolFailure(message: "shape must be linear or radial.")

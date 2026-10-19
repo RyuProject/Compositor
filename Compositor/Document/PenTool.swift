@@ -773,6 +773,23 @@ extension EditorSession {
         replacePenPath(at: index, with: style, preview: false, reportsErrors: false)
     }
 
+    /// Rebuilds an existing editable path in one undo step. `proposed` uses the layer's current unit coordinate
+    /// space; callers may put points outside 0...1 when growing the path because the commit re-fits its bounds.
+    @discardableResult
+    func updateVectorPath(_ layerID: UUID, with proposed: LayerVectorPathStyle, editName: String = "Edit Path") -> Bool {
+        guard canEditLayers, let index = document?.layers.firstIndex(where: { $0.id == layerID }),
+              let before = document?.layers[index].liveVectorPath?.style else { return false }
+        if before == proposed { return true }
+        finishOpacityEdit()
+        brushError = nil
+        beginEdit(editName)
+        replacePenPath(at: index, with: proposed, preview: false, reportsErrors: true)
+        let changed = document?.layers[index].liveVectorPath?.style != before
+        if changed { activeLayerID = layerID }
+        endEdit()
+        return changed
+    }
+
     func vectorPathTransformPreview(for layer: ImageLayer, transform: LayerTransform) -> CGImage? {
         guard transformEdit != nil,
               let vectorPath = layer.liveVectorPath,

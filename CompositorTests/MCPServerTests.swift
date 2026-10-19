@@ -59,8 +59,12 @@ struct MCPServerTests {
         let object = try #require(try JSONSerialization.jsonObject(with: listResponse.body) as? [String: Any])
         let result = try #require(object["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
-        #expect(tools.count == 18)
+        #expect(tools.count == 22)
         #expect(tools.contains { $0["name"] as? String == "compositor_add_vector_path" })
+        #expect(tools.contains { $0["name"] as? String == "compositor_update_vector_path" })
+        #expect(tools.contains { $0["name"] as? String == "compositor_apply_vector_path" })
+        #expect(tools.contains { $0["name"] as? String == "compositor_update_shape" })
+        #expect(tools.contains { $0["name"] as? String == "compositor_update_text" })
         #expect(tools.contains { $0["name"] as? String == "compositor_paint_stroke" })
         #expect(tools.contains { $0["name"] as? String == "compositor_add_text" })
         #expect(tools.contains { $0["name"] as? String == "compositor_manage_mask" })
@@ -201,6 +205,93 @@ struct MCPServerTests {
         let undone = await router.call(name: "compositor_history", arguments: ["action": "undo"])
         #expect(undone["isError"] as? Bool == false)
         #expect(workspace.current.session.activeLayer?.name != "AI curve")
+    }
+
+    @Test func roundTripsAndAppliesEditableCreativeLayers() async throws {
+        let workspace = ProjectWorkspace()
+        let router = MCPToolRouter(workspace: workspace)
+        _ = await router.call(name: "compositor_create_document", arguments: ["width": 400, "height": 300])
+        let session = workspace.current.session
+
+        session.foregroundColor = PaletteColor(red: 1, green: 0, blue: 1)
+        let vectorResponse = await router.call(name: "compositor_add_vector_path", arguments: [
+            "mode": "shape", "nodes": [
+                ["x": 20, "y": 20], ["x": 140, "y": 30], ["x": 80, "y": 130]
+            ]
+        ])
+        #expect(vectorResponse["isError"] as? Bool == false)
+        let vectorID = try #require(session.activeLayerID)
+        #expect(session.activeLayer?.liveVectorPath?.style.red == 0)
+        #expect(session.activeLayer?.liveVectorPath?.style.blue == 0)
+
+        let editedVector = await router.call(name: "compositor_update_vector_path", arguments: [
+            "layer_id": vectorID.uuidString, "color": "#123456", "line_width": 11,
+            "nodes": [
+                ["x": 30, "y": 25, "out_x": 55, "out_y": 10],
+                ["x": 180, "y": 40, "in_x": 150, "in_y": 15],
+                ["x": 95, "y": 165]
+            ]
+        ])
+        #expect(editedVector["isError"] as? Bool == false)
+        #expect(session.activeLayer?.liveVectorPath?.style.lineWidth == 11)
+        let activeVectorLayer = try #require(session.activeLayer)
+        let activeVectorSummary = router.layerSummary(activeVectorLayer)
+        let pathSummary = try #require(activeVectorSummary["vector_path"] as? [String: Any])
+        #expect(pathSummary["coordinate_space"] as? String == "document_pixels")
+        let returnedNodes = try #require(pathSummary["nodes"] as? [[String: Any]])
+        let firstReturnedNode = try #require(returnedNodes.first)
+        let returnedX = try #require(firstReturnedNode["x"] as? CGFloat)
+        let returnedY = try #require(firstReturnedNode["y"] as? CGFloat)
+        #expect(abs(returnedX - 30) < 0.01)
+        #expect(abs(returnedY - 25) < 0.01)
+
+        let fill = await router.call(name: "compositor_apply_vector_path", arguments: [
+            "layer_id": vectorID.uuidString, "action": "fill", "color": "#ABCDEF"
+        ])
+        #expect(fill["isError"] as? Bool == false)
+        let stroke = await router.call(name: "compositor_apply_vector_path", arguments: [
+            "layer_id": vectorID.uuidString, "action": "stroke", "color": "#FEDCBA",
+            "size": 9, "hardness": 0.25, "opacity": 0.75
+        ])
+        #expect(stroke["isError"] as? Bool == false)
+        #expect(session.activeLayer?.liveVectorPath?.style.fill != nil)
+        #expect(session.activeLayer?.liveVectorPath?.style.brushStroke?.diameter == 9)
+        let selection = await router.call(name: "compositor_apply_vector_path", arguments: [
+            "layer_id": vectorID.uuidString, "action": "load_selection"
+        ])
+        #expect(selection["isError"] as? Bool == false)
+        #expect(session.selection?.isEmpty == false)
+
+        session.shapeSmoothing = true
+        let shapeResponse = await router.call(name: "compositor_add_shape", arguments: [
+            "kind": "rectangle", "start_x": 200, "start_y": 20, "end_x": 300, "end_y": 100
+        ])
+        #expect(shapeResponse["isError"] as? Bool == false)
+        let shapeID = try #require(session.activeLayerID)
+        #expect(session.activeLayer?.liveShape?.style.smoothing != true)
+        let editedShape = await router.call(name: "compositor_update_shape", arguments: [
+            "layer_id": shapeID.uuidString, "color": "#00AA44", "corner_radius": 18,
+            "smooth_corners": true
+        ])
+        #expect(editedShape["isError"] as? Bool == false)
+        #expect(session.activeLayer?.liveShape?.style.smoothing == true)
+        #expect(session.activeLayer?.liveShape?.style.cornerRadius == 18)
+
+        session.textDefaults.fontSize = 444
+        let textResponse = await router.call(name: "compositor_add_text", arguments: [
+            "content": "Original", "x": 20, "y": 200
+        ])
+        #expect(textResponse["isError"] as? Bool == false)
+        let textID = try #require(session.activeLayerID)
+        #expect(session.activeLayer?.liveText?.style.fontSize == 72)
+        let editedText = await router.call(name: "compositor_update_text", arguments: [
+            "layer_id": textID.uuidString, "content": "Edited through MCP", "font_size": 24,
+            "color": "#224466", "tracking": 15
+        ])
+        #expect(editedText["isError"] as? Bool == false)
+        #expect(session.activeLayer?.liveText?.style.content == "Edited through MCP")
+        #expect(session.activeLayer?.liveText?.style.fontSize == 24)
+        #expect(session.activeLayer?.liveText?.style.tracking == 15)
     }
 
     @Test func createsEditableShapeThroughTool() async throws {
